@@ -44,6 +44,7 @@
 #include <vfs.h>
 #include <syscall.h>
 #include <test.h>
+#include <copyinout.h>
 
 /*
  * Load program "progname" and start running it in usermode.
@@ -52,16 +53,17 @@
  * Calls vfs_open on progname and thus may destroy it.
  */
 int
-runprogram(char *progname)
+runprogram(char *progname, unsigned long argc, char **argv)
 {
 	struct vnode *v;
 	vaddr_t entrypoint, stackptr;
-	int result;
+	int res;
+	userptr_t u_argv[argc + 1]; /* Argument pointer array */
 
 	/* Open the file. */
-	result = vfs_open(progname, O_RDONLY, 0, &v);
-	if (result) {
-		return result;
+	res = vfs_open(progname, O_RDONLY, 0, &v);
+	if (res) {
+		return res;
 	}
 
 	/* We should be a new thread. */
@@ -78,29 +80,49 @@ runprogram(char *progname)
 	as_activate(curthread->t_addrspace);
 
 	/* Load the executable. */
-	result = load_elf(v, &entrypoint);
-	if (result) {
+	res = load_elf(v, &entrypoint);
+	if (res) {
 		/* thread_exit destroys curthread->t_addrspace */
 		vfs_close(v);
-		return result;
+		return res;
 	}
 
 	/* Done with the file now. */
 	vfs_close(v);
 
 	/* Define the user stack in the address space */
-	result = as_define_stack(curthread->t_addrspace, &stackptr);
-	if (result) {
+	res = as_define_stack(curthread->t_addrspace, &stackptr);
+	if (res) {
 		/* thread_exit destroys curthread->t_addrspace */
-		return result;
+		return res;
+	}
+
+	for (unsigned long i = 0; i < argc; i++) {
+		size_t arglen = strlen(argv[i]) + 1;
+		stackptr -= (arglen + ((stackptr - arglen) % 4));
+		argv[i][arglen - 1] = '\0';
+		res = copyoutstr(argv[i], (userptr_t) stackptr, arglen,
+			NULL);
+		if (res) {
+			panic("copyoutstr not complete\n");
+		}
+		u_argv[i] = (userptr_t) stackptr;
+		kfree(argv[i]);
+	}
+	u_argv[argc] = 0;
+	kfree(argv);
+
+	size_t offset = sizeof(userptr_t) * (argc + 1);
+	stackptr -= (offset + ((stackptr - offset) % 4));
+	res = copyout(u_argv, (userptr_t) stackptr, offset);
+	if (res) {
+		panic("copyout returned\n");
 	}
 
 	/* Warp to user mode. */
-	enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
-			  stackptr, entrypoint);
-	
+	enter_new_process(argc, (userptr_t) stackptr, stackptr, entrypoint);
+
 	/* enter_new_process does not return. */
 	panic("enter_new_process returned\n");
 	return EINVAL;
 }
-

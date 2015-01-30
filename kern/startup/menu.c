@@ -130,18 +130,20 @@ cmd_progthread(void *ptr, unsigned long nargs)
 
 	KASSERT(nargs >= 1);
 
-	if (nargs > 2) {
-		kprintf("Warning: argument passing from menu not supported\n");
-	}
+	//if (nargs > 2) {
+		//kprintf("Warning: argument passing from menu not supported\n");
+	//}
 
 	/* Hope we fit. */
 	KASSERT(strlen(args[0]) < sizeof(progname));
 
 	strcpy(progname, args[0]);
 	strcpy(progname2,args[0]); /* demke: make extra copy for runprogram */
+
+	result = runprogram(progname2, nargs, args);
+
 	free_args(nargs, args);
 
-	result = runprogram(progname2);
 	if (result) {
 		kprintf("Running program %s failed: %s\n", progname,
 			strerror(result));
@@ -172,6 +174,8 @@ common_prog(int nargs, char **args)
 {
 	int result;
 	char **args_copy;
+	pid_t *ret;
+
 #if OPT_SYNCHPROBS
 	kprintf("Warning: this probably won't work with a "
 		"synchronization-problems kernel.\n");
@@ -185,19 +189,25 @@ common_prog(int nargs, char **args)
 		return ENOMEM;
 	}
 
+	if(strcmp(args[nargs-2], "&") == 0) {
+		ret = NULL; //This will cause thread_fork to detach the child
+	}
+
 	/* demke: and now call thread_fork with the copy */
 	
 	result = thread_fork(args_copy[0] /* thread name */,
 			cmd_progthread /* thread function */,
 			args_copy /* thread arg */, nargs /* thread arg */,
-			NULL);
+			ret);
+
 	if (result) {
+
 		kprintf("thread_fork failed: %s\n", strerror(result));
 		/* demke: need to free copy of args if fork fails */
 		free_args(nargs, args_copy);
 		return result;
-	}
 
+	}
 	return 0;
 }
 
